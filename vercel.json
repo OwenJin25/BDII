@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "C:\Users\Owen Jin\Documents\bdii\app.py",
+      "src": "api/app.py",
       "use": "@vercel/python",
       "config": {
         "runtime": "python3.9",
@@ -14,7 +14,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "C:\Users\Owen Jin\Documents\bdii\app.py"
+      "dest": "api/app.py"
     }
   ]
 }
