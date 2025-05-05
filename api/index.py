@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 import bcrypt
 import logging
 
-from vercel_wsgi import handle_request  # Adicionado para Vercel
-
 # Configuração básica de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -564,6 +562,3 @@ def listar_quartos_disponiveis():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-    
-def handler(environ, start_response):
-    return handle_request(app, environ, start_response)
