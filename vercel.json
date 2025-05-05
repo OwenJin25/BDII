@@ -14,7 +14,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/app.py"
+      "dest": "C:\Users\Owen Jin\Documents\bdii\app.py"
     }
   ]
 }
