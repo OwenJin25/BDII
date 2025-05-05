@@ -5,8 +5,9 @@
       "src": "api/app.py",
       "use": "@vercel/python",
       "config": {
+        "runtime": "python3.9",
         "maxLambdaSize": "15mb",
-        "runtime": "python3.9"
+        "includeFiles": ["requirements.txt"]
       }
     }
   ],
