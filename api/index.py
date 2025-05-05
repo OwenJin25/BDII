@@ -15,7 +15,7 @@ load_dotenv()
 app = Flask(__name__)
 
 # Configuração do JWT
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'fallback_secret_key_123')
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', '123')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
 jwt = JWTManager(app)
 
