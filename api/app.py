@@ -10,7 +10,11 @@ import os
 from dotenv import load_dotenv
 
 # Carregar variáveis de ambiente
-
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except:
+    pass  # Usa as variáveis do Vercel
 
 app = Flask(__name__)
 
