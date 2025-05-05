@@ -2,4 +2,4 @@ flask
 psycopg2-binary
 bcrypt
 pyjwt
-vercel-wsgi
+
