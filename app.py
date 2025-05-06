@@ -223,14 +223,16 @@ def criar_reserva(current_user):
         return jsonify({'error': 'Todos os campos são obrigatórios'}), 400
 
     try:
+        # Convert string dates to date objects
+        checkin_date = datetime.strptime(data_checkin, '%Y-%m-%d').date()
+        checkout_date = datetime.strptime(data_checkout, '%Y-%m-%d').date()
+        
         conn = get_db_connection()
         cur = conn.cursor()
 
-        #Obter o usuário da BD atual
+        # Registrar auditoria
         cur.execute("SELECT current_user")
         db_user = cur.fetchone()[0]
-
-        #Registrar auditoria antes da operação
         registrar_auditoria(
             db_user=db_user,
             app_user=current_user,
@@ -243,8 +245,9 @@ def criar_reserva(current_user):
         if not cur.fetchone():
             return jsonify({'error': 'Quarto não encontrado'}), 404
         
-        # Chamar procedure PL/pgSQL para criar reserva
-        cur.execute("CALL criar_reserva(%s, %s, %s, %s)", (current_user, quarto_id, data_checkin, data_checkout))
+        # Chamar procedure com tipos explícitos
+        cur.execute("CALL criar_reserva(%s, %s, %s, %s)", 
+                   (current_user, quarto_id, checkin_date, checkout_date))
         
         # Obter o ID da reserva criada
         cur.execute("SELECT lastval()")
@@ -257,6 +260,8 @@ def criar_reserva(current_user):
             'reserva_id': reserva_id
         }), 201
         
+    except ValueError:
+        return jsonify({'error': 'Formato de data inválido. Use YYYY-MM-DD'}), 400
     except psycopg2.Error as e:
         conn.rollback()
         error_msg = str(e).split('\n')[0]
