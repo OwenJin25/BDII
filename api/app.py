@@ -13,20 +13,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', '123')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 # Configuração da conexão com o PostgreSQL
 def get_db_connection():
     try:
         conn = psycopg2.connect(
-            host="aid.estgoh.ipc.pt",
-            database="db2022145941",
-            user="a2022145941",
-            password="1234567890"
+            host=os.environ.get('DB_HOST'),
+            database=os.environ.get('DB_NAME'),
+            user=os.environ.get('DB_USER'),
+            password=os.environ.get('DB_PASSWORD')
         )
         return conn
     except Exception as e:
-        logger.error(f"Erro ao conectar ao base de dados: {str(e)}")
+        logger.error(f"Erro ao conectar ao banco de dados: {str(e)}")
         raise
+    
+required_env_vars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'SECRET_KEY']
+missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+
+if missing_vars:
+    raise RuntimeError(f"Variáveis de ambiente ausentes: {', '.join(missing_vars)}")
 
 # Decorator para verificar o token JWT
 def token_required(f):
@@ -219,6 +225,18 @@ def criar_reserva(current_user):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+
+        #Obter o usuário da BD atual
+        cur.execute("SELECT current_user")
+        db_user = cur.fetchone()[0]
+
+        #Registrar auditoria antes da operação
+        registrar_auditoria(
+            db_user=db_user,
+            app_user=current_user,
+            acao="INSERIR RESERVA",
+            detalhes=f"Quarto: {quarto_id}, Check-in: {data_checkin}, Check-out: {data_checkout}"
+        )
         
         # Verificar se o quarto existe
         cur.execute("SELECT id_quarto FROM QuartoHotel WHERE id_quarto = %s", (quarto_id,))
@@ -559,6 +577,28 @@ def listar_quartos_disponiveis():
             cur.close()
         if 'conn' in locals():
             conn.close()
+
+def registrar_auditoria(db_user, app_user, acao, detalhes=None):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(
+            "INSERT INTO Auditoria (db_user, app_user, acao, detalhes) VALUES (%s, %s, %s, %s)",
+            (db_user, app_user, acao, detalhes)
+        )
+
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Erro ao registrar auditoria: {str(e)}")
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+            
+    
+            
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
