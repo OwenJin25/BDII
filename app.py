@@ -223,48 +223,46 @@ def criar_reserva(current_user):
         return jsonify({'error': 'Todos os campos são obrigatórios'}), 400
 
     try:
-        # Convert string dates to date objects
+        # Convert to proper date objects first
         checkin_date = datetime.strptime(data_checkin, '%Y-%m-%d').date()
         checkout_date = datetime.strptime(data_checkout, '%Y-%m-%d').date()
-        
+
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Registrar auditoria
-        cur.execute("SELECT current_user")
-        db_user = cur.fetchone()[0]
-        registrar_auditoria(
-            db_user=db_user,
-            app_user=current_user,
-            acao="INSERIR RESERVA",
-            detalhes=f"Quarto: {quarto_id}, Check-in: {data_checkin}, Check-out: {data_checkout}"
-        )
+        # Get room price and calculate total
+        cur.execute("SELECT preco_quarto FROM QuartoHotel WHERE id_quarto = %s", (quarto_id,))
+        preco_quarto = cur.fetchone()[0]
+        dias = (checkout_date - checkin_date).days
+        valor_total = float(preco_quarto) * dias
+
+        # Call procedure with explicit types
+        cur.execute("CALL InserirReservaComVerificacao(%s, %s, %s::date, %s::date, %s::numeric)", 
+                   (current_user, quarto_id, checkin_date, checkout_date, valor_total))
+
+        # Get the new reservation ID
+        cur.execute("""
+            SELECT id_reserva FROM Reserva 
+            WHERE cliente_id = %s AND quarto_id = %s 
+            ORDER BY id_reserva DESC LIMIT 1
+        """, (current_user, quarto_id))
         
-        # Verificar se o quarto existe
-        cur.execute("SELECT id_quarto FROM QuartoHotel WHERE id_quarto = %s", (quarto_id,))
-        if not cur.fetchone():
-            return jsonify({'error': 'Quarto não encontrado'}), 404
-        
-        # Chamar procedure com tipos explícitos
-        cur.execute("CALL criar_reserva(%s, %s, %s, %s)", 
-                   (current_user, quarto_id, checkin_date, checkout_date))
-        
-        # Obter o ID da reserva criada
-        cur.execute("SELECT lastval()")
         reserva_id = cur.fetchone()[0]
-        
         conn.commit()
-        
+
         return jsonify({
             'message': 'Reserva criada com sucesso',
-            'reserva_id': reserva_id
+            'reserva_id': reserva_id,
+            'valor_total': valor_total
         }), 201
-        
-    except ValueError:
+
+    except ValueError as e:
         return jsonify({'error': 'Formato de data inválido. Use YYYY-MM-DD'}), 400
     except psycopg2.Error as e:
         conn.rollback()
         error_msg = str(e).split('\n')[0]
+        if "Quarto não disponível" in error_msg:
+            return jsonify({'error': 'Quarto não disponível para as datas selecionadas'}), 400
         return jsonify({'error': error_msg}), 400
     except Exception as e:
         logger.error(f"Erro ao criar reserva: {str(e)}")
