@@ -25,7 +25,7 @@ def get_db_connection():
         )
         return conn
     except Exception as e:
-        logger.error(f"Erro ao conectar ao banco de dados: {str(e)}")
+        logger.error(f"Erro ao conectar ao base de dados: {str(e)}")
         raise
     
 required_env_vars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'SECRET_KEY']
