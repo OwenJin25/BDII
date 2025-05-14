@@ -1,480 +1,327 @@
 from flask import Flask, request, jsonify, send_file
 import psycopg2
-from psycopg2 import sql
-from functools import wraps
 import jwt
-import datetime
-import os
-from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timezone, timedelta
+from functools import wraps
 import io
+from werkzeug.utils import secure_filename
+import os
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'sua-chave-secreta-aqui')
+app.config['SECRET_KEY'] = '123'  # Substitua por uma chave segura em produção
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
-# Configuração do base de dados - ajuste conforme seu ambiente
-DB_CONFIG = {
-    'host': 'aid.estgoh.ipc.pt',
-    'database': 'db2022145941',
-    'user': 'a2022145941',
-    'password': '1234567890'
-}
+# Configurações JWT
+JWT_SECRET = 'sua_chave_secreta_super_forte_123!'  # Deve ser igual ao usado no PostgreSQL
+JWT_ALGORITHM = 'HS256'
+JWT_EXPIRATION_HOURS = 24
 
-# Helper functions
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
 def get_db_connection():
-    """Estabelece conexão com o base de dados"""
-    conn = psycopg2.connect(**DB_CONFIG)
-    return conn
+    return psycopg2.connect(
+        host="aid.estgoh.ipc.pt",
+        database="db2022145941",
+        user="a2022145941",
+        password="1234567890"
+    )
 
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        
-        # Verifica o cabeçalho 'Authorization' (padrão JWT)
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]  # Remove "Bearer "
-        
-        if not token:
-            return jsonify({'message': 'Token não fornecido!'}), 401
-        
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_user = data['user_id']
-        except jwt.ExpiredSignatureError:
-            return jsonify({'message': 'Token expirado!'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'message': 'Token inválido!'}), 401
-        except Exception as e:
-            return jsonify({'message': 'Erro ao validar token!', 'error': str(e)}), 401
-        
-        return f(current_user, *args, **kwargs)
-    return decorated
+def create_token(user_id, role):
+    """Cria um token JWT válido"""
+    payload = {
+        'sub': str(user_id),  # Garante que o user_id é string
+        'role': role,
+        'iat': datetime.now(timezone.utc),
+        'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-# Rotas de Autenticação
+def token_required(roles=None):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            auth_header = request.headers.get('Authorization')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                return jsonify({'success': False, 'message': 'Token não fornecido'}), 401
+            
+            token = auth_header.split(' ')[1]
+            
+            try:
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+                
+                # Configura o usuário atual na requisição
+                request.current_user = {
+                    'user_id': int(payload['sub']),  # Converte de volta para inteiro
+                    'role': payload['role']
+                }
+                
+                if roles and payload['role'] not in roles:
+                    return jsonify({'success': False, 'message': 'Acesso não autorizado'}), 403
+                
+            except jwt.ExpiredSignatureError:
+                return jsonify({'success': False, 'message': 'Token expirado'}), 401
+            except jwt.InvalidTokenError as e:
+                return jsonify({'success': False, 'message': f'Token inválido: {str(e)}'}), 401
+            except Exception as e:
+                return jsonify({'success': False, 'message': f'Erro ao processar token: {str(e)}'}), 500
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+# Endpoints de Autenticação
 @app.route('/auth/register', methods=['POST'])
 def register():
-    """Registar novo utilizador"""
     data = request.get_json()
-    required_fields = ['nome', 'email', 'senha']
+    required = ['nome', 'email', 'senha', 'tipo']
     
-    if not all(field in data for field in required_fields):
-        return jsonify({'message': 'Nome, email e senha são obrigatórios!'}), 400
-
+    if not all(field in data for field in required):
+        return jsonify({'success': False, 'message': 'Campos em falta'}), 400
+    
+    if data['tipo'] not in ['cliente', 'rececionista', 'admin']:
+        return jsonify({'success': False, 'message': 'Tipo de utilizador inválido'}), 400
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Chamar função PL/pgSQL para registar utilizador
-        cur.callproc('registar_utilizador', (
+        cur.callproc('registar_utilizador', [
             data['nome'],
             data['email'],
             data['senha'],
-            data.get('tipo', 'cliente')
-        ))
-        user_id = cur.fetchone()[0]
-        
+            data['tipo']
+        ])
+        result = cur.fetchone()[0]
         conn.commit()
-        return jsonify({
-            'message': 'Utilizador registado com sucesso!',
-            'user_id': user_id
-        }), 201
+        
+        return jsonify(result), 201 if result['success'] else 400
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
 @app.route('/auth/login', methods=['POST'])
 def login():
-    """Autenticar utilizador e retornar token JWT"""
     data = request.get_json()
+    if not data or not data.get('email') or not data.get('senha'):
+        return jsonify({'success': False, 'message': 'Credenciais necessárias'}), 400
     
-    if not data or not 'email' in data or not 'senha' in data:
-        return jsonify({'message': 'Email e senha são obrigatórios!'}), 400
-
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        cur.callproc('autenticar_utilizador', [data['email'], data['senha']])
+        result = cur.fetchone()[0]
         
-        # Verificar credenciais
-        cur.execute(
-            "SELECT id_utilizador, nome_utilizador, email_utilizador, tipo_utilizador, senha_utilizador "
-            "FROM utilizador WHERE email_utilizador = %s",
-            (data['email'],)
-        )
-        user = cur.fetchone()
+        if not result['success']:
+            return jsonify(result), 401
         
-        if not user:
-            return jsonify({'message': 'Utilizador não encontrado!'}), 404
-        
-        # Verificar senha (usando pgcrypto no base)
-        cur.execute(
-            "SELECT senha_utilizador = crypt(%s, senha_utilizador) AS match "
-            "FROM utilizador WHERE id_utilizador = %s",
-            (data['senha'], user[0])
-        )
-        password_match = cur.fetchone()[0]
-        
-        if not password_match:
-            return jsonify({'message': 'Senha incorreta!'}), 401
-        
-        # Gerar token JWT
-        token = jwt.encode({
-            'user_id': user[0],
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-        }, app.config['SECRET_KEY'])
+        token = create_token(result['user_id'], result['tipo'])
         
         return jsonify({
+            'success': True,
             'token': token,
-            'user_id': user[0],
-            'nome': user[1],
-            'email': user[2],
-            'tipo': user[3]
-        })
+            'user_id': result['user_id'],
+            'role': result['tipo']
+        }), 200
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
-# Rotas de Quartos
-@app.route('/quartos', methods=['GET'])
-def get_quartos():
-    """Listar todos os quartos disponíveis"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT id_quarto, numero_quarto, preco_quarto, tipo, status_quarto 
-            FROM quartohotel 
-            WHERE status_quarto = 'disponivel'
-        """)
-        quartos = cur.fetchall()
-        
-        result = [{
-            'id': q[0],
-            'numero': q[1],
-            'preco': float(q[2]),
-            'tipo': q[3],
-            'status': q[4]
-        } for q in quartos]
-        
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'message': str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
-
-@app.route('/quartos/<int:quarto_id>', methods=['GET'])
-def get_quarto(quarto_id):
-    """Obter detalhes de um quarto específico"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT id_quarto, numero_quarto, preco_quarto, tipo, status_quarto 
-            FROM quartohotel 
-            WHERE id_quarto = %s
-        """, (quarto_id,))
-        quarto = cur.fetchone()
-        
-        if not quarto:
-            return jsonify({'message': 'Quarto não encontrado!'}), 404
-        
-        return jsonify({
-            'id': quarto[0],
-            'numero': quarto[1],
-            'preco': float(quarto[2]),
-            'tipo': quarto[3],
-            'status': quarto[4]
-        })
-    except Exception as e:
-        return jsonify({'message': str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
-
-# Rotas de Reservas
+# Endpoints de Reservas
 @app.route('/reservas', methods=['POST'])
-@token_required
-def criar_reserva(current_user):
-    """Criar nova reserva"""
+@token_required(roles=['cliente', 'rececionista'])
+def criar_reserva():
     data = request.get_json()
-    required_fields = ['quarto_id', 'data_checkin', 'data_checkout']
+    required = ['quarto_id', 'data_checkin', 'data_checkout']
     
-    if not all(field in data for field in required_fields):
-        return jsonify({'message': 'Quarto, data de check-in e check-out são obrigatórios!'}), 400
-
+    if not all(field in data for field in required):
+        return jsonify({'success': False, 'message': 'Campos em falta'}), 400
+    
+    cliente_id = data.get('cliente_id', request.current_user['user_id'])
+    if request.current_user['role'] == 'cliente' and cliente_id != request.current_user['user_id']:
+        return jsonify({'success': False, 'message': 'Não pode criar reservas para outros clientes'}), 403
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # 1. Chamar a PROCEDURE usando CALL
-        cur.execute(
-            "CALL criar_reserva(%s, %s, %s, %s, NULL)",  # NULL é para o parâmetro OUT
-            (current_user, data['quarto_id'], data['data_checkin'], data['data_checkout'])
-        )
-        
+        cur.callproc('criar_reserva', [
+            cliente_id,
+            data['quarto_id'],
+            data['data_checkin'],
+            data['data_checkout']
+        ])
+        result = cur.fetchone()[0]
         conn.commit()
         
-        return jsonify({
-            'message': 'Reserva criada com sucesso!',
-        }), 201
-        
+        return jsonify(result), 201 if result['success'] else 400
     except Exception as e:
         conn.rollback()
-        return jsonify({'message': str(e)}), 500
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
-        
+
 @app.route('/reservas/<int:reserva_id>', methods=['GET'])
-@token_required
-def get_reserva(current_user, reserva_id):
-    """Obter detalhes de uma reserva específica"""
+@token_required()
+def obter_reserva(reserva_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        if request.current_user['role'] == 'cliente':
+            cur.callproc('obter_reserva_cliente', [reserva_id, request.current_user['user_id']])
+        else:
+            cur.callproc('obter_reserva', [reserva_id])
         
-        # Verificar se a reserva pertence ao usuário (ou se é admin/recepcionista)
-        cur.execute("""
-            SELECT r.id_reserva, q.numero_quarto, q.tipo, r.data_checkin, r.data_checkout, 
-                   r.disponivel, r.valor_total, r.cliente_id
-            FROM reserva r
-            JOIN quartohotel q ON r.quarto_id = q.id_quarto
-            WHERE r.id_reserva = %s
-        """, (reserva_id,))
-        reserva = cur.fetchone()
-        
-        if not reserva:
-            return jsonify({'message': 'Reserva não encontrada!'}), 404
-        
-        # Verificar permissões
-        if reserva[7] != current_user:
-            # Verificar se o usuário é admin ou recepcionista
-            cur.execute("""
-                SELECT tipo_utilizador FROM utilizador WHERE id_utilizador = %s
-            """, (current_user,))
-            user_type = cur.fetchone()[0]
-            
-            if user_type not in ['admin', 'rececionista']:
-                return jsonify({'message': 'Não autorizado!'}), 403
-        
-        return jsonify({
-            'id': reserva[0],
-            'numero_quarto': reserva[1],
-            'tipo_quarto': reserva[2],
-            'data_checkin': reserva[3].isoformat(),
-            'data_checkout': reserva[4].isoformat(),
-            'status': reserva[5],
-            'valor_total': float(reserva[6])
-        })
+        result = cur.fetchone()[0]
+        return jsonify(result), 200 if result['success'] else 404
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
 @app.route('/reservas/<int:reserva_id>/cancelar', methods=['PUT'])
-@token_required
-def cancelar_reserva(current_user, reserva_id):
-    """Cancelar uma reserva"""
-    data = request.get_json()
-    motivo = data.get('motivo', 'Não especificado')
-
+@token_required(roles=['cliente', 'rececionista'])
+def cancelar_reserva(reserva_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        if request.current_user['role'] == 'cliente':
+            cur.callproc('cancelar_reserva_cliente', [reserva_id, request.current_user['user_id']])
+        else:
+            cur.callproc('cancelar_reserva', [reserva_id])
         
-        # Chamar procedure PL/pgSQL para cancelar reserva
-        cur.callproc('cancelar_reserva', (reserva_id, current_user, motivo))
-        
+        result = cur.fetchone()[0]
         conn.commit()
-        return jsonify({'message': 'Reserva cancelada com sucesso!'})
+        
+        return jsonify(result), 200 if result['success'] else 400
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
-# Rotas de Pagamentos
+# Endpoints de Pagamentos
 @app.route('/pagamentos', methods=['POST'])
-@token_required
-def processar_pagamento(current_user):
-    """Processar pagamento de uma reserva"""
+@token_required(roles=['cliente', 'rececionista','admin'])
+def processar_pagamento():
     data = request.get_json()
-    required_fields = ['reserva_id', 'metodo', 'valor']
+    required = ['reserva_id', 'metodo', 'valor']
     
-    if not all(field in data for field in required_fields):
-        return jsonify({'message': 'Reserva, método e valor são obrigatórios!'}), 400
-
+    if not all(field in data for field in required):
+        return jsonify({'success': False, 'message': 'Campos em falta'}), 400
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Chamar procedure PL/pgSQL para processar pagamento
-        cur.callproc('processar_pagamento', (
+        cur.callproc('processar_pagamento', [
             data['reserva_id'],
             data['metodo'],
-            data['valor']
-        ))
-        pagamento_id = cur.fetchone()[0]
-        
+            data['valor'],
+            request.current_user['user_id']
+        ])
+        result = cur.fetchone()[0]
         conn.commit()
-        return jsonify({
-            'message': 'Pagamento processado com sucesso!',
-            'pagamento_id': pagamento_id
-        })
+        
+        return jsonify(result), 201 if result['success'] else 400
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
-# Rotas Administrativas
-
-def verificar_admin(user_id):
-    """Verifica se o usuário é admin"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT tipo_utilizador FROM utilizador WHERE id_utilizador = %s", (user_id,))
-        user_type = cur.fetchone()
-        return user_type and user_type[0] == 'admin'
-    except:
-        return False
-    finally:
-        cur.close()
-        conn.close()
-        
-@app.route('/admin/quartos', methods=['POST'])
-@token_required
-def adicionar_quarto(current_user):
-    """Adicionar novo quarto (apenas admin)"""
-    # Verificar se o usuário é admin
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("SELECT tipo_utilizador FROM utilizador WHERE id_utilizador = %s", (current_user,))
-        user_type = cur.fetchone()[0]
-        
-        if user_type != 'admin':
-            return jsonify({'message': 'Acesso não autorizado!'}), 403
-    except:
-        return jsonify({'message': 'Erro ao verificar permissões!'}), 500
-
-    data = request.get_json()
-    required_fields = ['numero', 'preco', 'tipo']
-    
-    if not all(field in data for field in required_fields):
-        return jsonify({'message': 'Número, preço e tipo são obrigatórios!'}), 400
-
-    try:
-        # Chamar procedure PL/pgSQL para adicionar quarto
-        cur.callproc('adicionar_quarto', (
-            data['numero'],
-            data['preco'],
-            data['tipo']
-        ))
-        
-        conn.commit()
-        return jsonify({'message': 'Quarto adicionado com sucesso!'}), 201
-    except Exception as e:
-        return jsonify({'message': str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
-        
+# Endpoints de Imagens
 @app.route('/upload-imagem', methods=['POST'])
-@token_required
-def upload_imagem(current_user):
-    """Upload de imagem para um quarto"""
-    # Verificar se é admin
-    if not verificar_admin(current_user):
-        return jsonify({'message': 'Acesso não autorizado!'}), 403
+@token_required(roles=['admin'])
+def upload_imagem():
+    if 'imagem' not in request.files:
+        return jsonify({'success': False, 'message': 'Nenhuma imagem enviada'}), 400
     
-    if 'file' not in request.files:
-        return jsonify({'message': 'Nenhum arquivo enviado!'}), 400
-    
-    file = request.files['file']
+    file = request.files['imagem']
     quarto_id = request.form.get('quarto_id')
     
-    if file.filename == '':
-        return jsonify({'message': 'Nome de arquivo vazio!'}), 400
+    if not quarto_id or not file or file.filename == '':
+        return jsonify({'success': False, 'message': 'Dados inválidos'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'success': False, 'message': 'Tipo de ficheiro não permitido'}), 400
+    
+    filename = secure_filename(file.filename)
+    image_data = file.read()
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
     
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # Chama a função e obtém o resultado
+        cur.callproc('upload_imagem_quarto', [quarto_id, image_data, filename])
+        result = cur.fetchone()[0]  # Obtém o JSON retornado
         
-        # Converter imagem para bytes
-        imagem_bytes = file.read()
-        
-        # Atualizar quarto com a imagem
-        cur.execute(
-            "UPDATE quartohotel SET imagem = %s WHERE id_quarto = %s",
-            (psycopg2.Binary(imagem_bytes), quarto_id)
-        )
+        if not result['success']:
+            conn.rollback()
+            return jsonify(result), 404
         
         conn.commit()
-        return jsonify({'message': 'Imagem atualizada com sucesso!'})
+        return jsonify(result), 201
+        
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        conn.rollback()
+        app.logger.error(f"Erro ao carregar imagem: {str(e)}")
+        return jsonify({
+            'success': False, 
+            'message': 'Erro ao processar o pedido'
+        }), 500
+        
     finally:
         cur.close()
         conn.close()
 
 @app.route('/quartos/<int:quarto_id>/imagem', methods=['GET'])
-def get_imagem_quarto(quarto_id):
-    """Obter imagem de um quarto"""
+def obter_imagem_quarto(quarto_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        cur.callproc('obter_imagem_quarto', [quarto_id])
+        img_data = cur.fetchone()[0]
         
-        cur.execute(
-            "SELECT imagem FROM quartohotel WHERE id_quarto = %s",
-            (quarto_id,))
-        imagem = cur.fetchone()[0]
-        
-        if not imagem:
-            return jsonify({'message': 'Imagem não encontrada!'}), 404
-        
+        if not img_data:
+            return jsonify({
+                'success': False,
+                'message': 'Quarto não encontrado ou sem imagem'
+            }), 404
+            
         return send_file(
-            io.BytesIO(imagem),
-            mimetype='image/jpeg'  # Ajustar conforme tipo real
-        )
+            io.BytesIO(img_data),
+            mimetype='image/jpeg',
+            as_attachment=False,
+            download_name=f'quarto_{quarto_id}.jpg'
+        ), 200
+        
     except Exception as e:
-        return jsonify({'message': str(e)}), 500
+        return jsonify({
+            'success': False, 
+            'message': str(e)
+        }), 500
+        
     finally:
         cur.close()
         conn.close()
-
-@app.route('/quartos/disponibilidade', methods=['GET'])
-def verificar_disponibilidade():
-    quarto_id = request.args.get('quarto_id')
-    checkin = request.args.get('checkin')
-    checkout = request.args.get('checkout')
-    
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
         
-        cur.execute(
-            "SELECT verificar_disponibilidade(%s, %s, %s)",
-            (quarto_id, checkin, checkout)
-        )
-        result = cur.fetchone()[0]
-        
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
-
 if __name__ == '__main__':
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     app.run(debug=True)
