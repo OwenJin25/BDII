@@ -13,7 +13,7 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
 # Configurações JWT
-JWT_SECRET = 'sua_chave_secreta_super_forte_123!'  # Deve ser igual ao usado no PostgreSQL
+JWT_SECRET = os.environ.get('JWT_SECRET', '123')
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
 
