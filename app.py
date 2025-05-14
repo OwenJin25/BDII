@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 import os
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = '123'  # Substitua por uma chave segura em produção
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', '123')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
@@ -23,10 +23,10 @@ def allowed_file(filename):
 
 def get_db_connection():
     return psycopg2.connect(
-        host="aid.estgoh.ipc.pt",
-        database="db2022145941",
-        user="a2022145941",
-        password="1234567890"
+        host=os.getenv('DB_HOST', 'aid.estgoh.ipc.pt'),
+        database=os.getenv('DB_NAME', 'db2022145941'),
+        user=os.getenv('DB_USER', 'a2022145941'),
+        password=os.getenv('DB_PASSWORD', '1234567890')
     )
 
 def create_token(user_id, role):
