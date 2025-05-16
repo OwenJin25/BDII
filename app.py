@@ -8,11 +8,11 @@ from werkzeug.utils import secure_filename
 import os
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', '123')
+app.config['SECRET_KEY'] = '123'  # Substitua por uma chave segura em produção
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
 # Configurações JWT
-JWT_SECRET = os.environ.get('JWT_SECRET', '123')
+JWT_SECRET = 'sua_chave_secreta_super_forte_123!'  # Deve ser igual ao usado no PostgreSQL
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
 
@@ -22,10 +22,10 @@ def allowed_file(filename):
 
 def get_db_connection():
     return psycopg2.connect(
-        host=os.getenv('DB_HOST', 'aid.estgoh.ipc.pt'),
-        database=os.getenv('DB_NAME', 'db2022145941'),
-        user=os.getenv('DB_USER', 'a2022145941'),
-        password=os.getenv('DB_PASSWORD', '1234567890')
+        host="aid.estgoh.ipc.pt",
+        database="db2022145941",
+        user="a2022145941",
+        password="1234567890"
     )
 
 def create_token(user_id, role):
@@ -320,6 +320,56 @@ def obter_imagem_quarto(quarto_id):
     finally:
         cur.close()
         conn.close()
-        
+
+@app.route('/quartos/disponiveis', methods=['POST'])
+@token_required(roles=['admin'])
+def consultar_quartos_disponiveis():
+    dados = request.get_json()
+
+    check_in = dados.get('data_checkin')
+    check_out = dados.get('data_checkout')
+
+    if not check_in or not check_out:
+        return jsonify({'success': False, 'message': 'Parâmetros "check_in" e "check_out" são obrigatórios.'}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT * FROM consultar_quartos_disponiveis(%s, %s);", (check_in, check_out))
+        quartos = cur.fetchall()
+
+        colnames = [desc[0] for desc in cur.description]
+        resultados = [dict(zip(colnames, row)) for row in quartos]
+
+        return jsonify({'success': True, 'quartos': resultados}), 200
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+    finally:
+        cur.close()
+        conn.close()
+@app.route('/pagamentos/historico', methods=['GET'])
+@token_required()
+def historico_pagamentos():
+    user_id = request.current_user['user_id']
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.callproc('obter_historico_pagamentos', [user_id])
+        resultados = cur.fetchall()
+        colnames = [desc[0] for desc in cur.description]
+        pagamentos = [dict(zip(colnames, row)) for row in resultados]
+
+        return jsonify({'success': True, 'pagamentos': pagamentos}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
 if __name__ == '__main__':
     app.run(debug=True)
