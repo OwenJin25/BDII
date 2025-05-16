@@ -136,7 +136,7 @@ def login():
 
 # Endpoints de Reservas
 @app.route('/reservas', methods=['POST'])
-@token_required(roles=['cliente', 'rececionista'])
+@token_required(roles=['cliente', 'rececionista','admin'])
 def criar_reserva():
     data = request.get_json()
     required = ['quarto_id', 'data_checkin', 'data_checkout']
@@ -190,7 +190,7 @@ def obter_reserva(reserva_id):
         conn.close()
 
 @app.route('/reservas/<int:reserva_id>/cancelar', methods=['PUT'])
-@token_required(roles=['cliente', 'rececionista'])
+@token_required(roles=['cliente', 'rececionista','admin'])
 def cancelar_reserva(reserva_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -290,6 +290,7 @@ def upload_imagem():
         conn.close()
 
 @app.route('/quartos/<int:quarto_id>/imagem', methods=['GET'])
+@token_required(roles=['admin'])
 def obter_imagem_quarto(quarto_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -370,6 +371,9 @@ def historico_pagamentos():
     finally:
         cur.close()
         conn.close()
+
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
