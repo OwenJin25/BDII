@@ -8,11 +8,11 @@ from werkzeug.utils import secure_filename
 import os
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = '123'  # Substitua por uma chave segura em produção
+app.config['SECRET_KEY'] = '123'  
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
 # Configurações JWT
-JWT_SECRET = 'sua_chave_secreta_super_forte_123!'  # Deve ser igual ao usado no PostgreSQL
+JWT_SECRET = '123!'  # Deve ser igual ao usado no PostgreSQL
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
 
